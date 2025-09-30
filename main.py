@@ -1,77 +1,213 @@
 import os
 import json
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-import openai
+from datetime import datetime
+
 import gspread
 from google.oauth2.service_account import Credentials
 
-# 🔧 Логирование
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# 🔑 Настройки
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SPREADSHEET_NAME = "AI Idea Lab Leads"
-
-# ✅ Подключение к OpenAI
-openai.api_key = OPENAI_API_KEY
-
-# 📁 Авторизация Google
-creds_json = os.getenv("GOOGLE_CREDENTIALS")
-if not creds_json:
-    raise Exception("❌ Переменная окружения GOOGLE_CREDENTIALS не найдена!")
-
-creds_dict = json.loads(creds_json)
-
-creds = Credentials.from_service_account_info(
-    creds_dict,
-    scopes=[
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
+from telegram import Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters,
+    ContextTypes, ConversationHandler
 )
 
-gc = gspread.authorize(creds)
+from openai import OpenAI
 
-# 📊 Подключаемся к таблице
-try:
-    sheet = gc.open(SPREADSHEET_NAME).sheet1
-    logger.info(f"✅ Подключено к Google Sheet: {SPREADSHEET_NAME}")
-except Exception as e:
-    logger.error(f"❌ Ошибка при подключении к таблице: {e}")
-    raise
+# ---------- Логи ----------
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
-# 📩 Обработчики Telegram
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Отправь мне данные лида, и я сохраню их в таблицу.")
+# ---------- ENV ----------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "AI Idea Lab Leads")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")  # https://<your>.onrender.com
+PORT = int(os.getenv("PORT", "8000"))
 
-async def save_lead(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    logger.info(f"📥 Получено сообщение: {text}")
+# Секретный путь вебхука. Если не задан, используем сам токен (надёжно и просто).
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", TELEGRAM_TOKEN)
 
-    # 🧠 Пример простого сохранения: одна ячейка на сообщение
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN не задан")
+
+if not OPENAI_API_KEY:
+    log.warning("⚠️ OPENAI_API_KEY не задан — идеи генерироваться не будут.")
+
+# ---------- Google Sheets ----------
+def connect_sheet():
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if not creds_json:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON не задан")
+
     try:
-        sheet.append_row([text])
-        await update.message.reply_text("✅ Лид успешно сохранён в таблицу!")
+        creds_dict = json.loads(creds_json)
+    except json.JSONDecodeError:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON: невалидный JSON")
+
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    client = gspread.authorize(creds)
+    sh = client.open(SPREADSHEET_NAME)
+    log.info("✅ Подключено к Google Sheet: %s", SPREADSHEET_NAME)
+
+    # Гарантируем заголовки
+    ws = sh.sheet1
+    headers = ws.row_values(1)
+    wanted = ["timestamp", "chat_id", "budget", "skills", "time_per_week", "ideas_text"]
+    if headers != wanted:
+        ws.clear()
+        ws.append_row(wanted)
+    return ws
+
+SHEET = connect_sheet()
+
+# ---------- OpenAI ----------
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+def generate_ideas(budget: str, skills: str, time_per_week: str) -> str:
+    fallback = (
+        "✅ Готово! Вот 3 идеи под твои условия:\n\n"
+        "1) Чат-ассистент для ниши, где ты шаришь (шаблоны + автозапуски).\n"
+        "2) Микросервис с ИИ-ответами на часто задаваемые вопросы (подписка).\n"
+        "3) Пакет шаблонов промптов/воркфлоу под конкретную боль (разовая продажа + апсейл).\n"
+    )
+    if not client:
+        return fallback
+
+    prompt = f"""
+Ты — продуктовый консультант. Сгенерируй три реалистичные идеи микробизнеса на базе ИИ-чатов.
+Условия:
+- Бюджет на старт: {budget}
+- Навыки/интересы: {skills}
+- Время в неделю: {time_per_week}
+
+Формат ответа:
+— Короткое название
+— Что это даёт пользователю (1–2 предложения)
+— 3 шага старта
+— Как монетизировать (1–2 варианта)
+Сделай лаконично и по делу.
+"""
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты помогаешь запускать простые бизнесы на ИИ, отвечай кратко и практично."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=700,
+        )
+        return resp.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"❌ Ошибка при сохранении лида: {e}")
-        await update.message.reply_text("⚠️ Ошибка при сохранении данных. Проверь настройки.")
+        log.error("OpenAI error: %s", e)
+        return fallback
 
-# 🚀 Запуск бота
-def main():
-    if not TELEGRAM_TOKEN:
-        raise Exception("❌ TELEGRAM_TOKEN не найден!")
+# ---------- Состояния диалога ----------
+BUDGET, SKILLS, TIMEPW = range(3)
 
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+START_TEXT = (
+    "Привет! Я 🤖 *AI Idea Lab*.\n"
+    "Задам 3 вопроса и подберу идеи микробизнеса под твои условия.\n\n"
+    "💰 Сколько денег готов вложить на старте?\n"
+    "_Примеры: 0, 1000, 5000_"
+)
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_lead))
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(START_TEXT, parse_mode="Markdown")
+    return BUDGET
 
-    logger.info("🤖 Бот запущен и готов к работе!")
-    application.run_polling()
+async def catch_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["budget"] = (update.message.text or "").strip()
+    await update.message.reply_text("🧠 Какие у тебя навыки или интересы? _Напиши через запятую_", parse_mode="Markdown")
+    return SKILLS
+
+async def catch_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["skills"] = (update.message.text or "").strip()
+    await update.message.reply_text("⏱ Сколько времени готов уделять в неделю?\n_Пример: >10 часов/нед_", parse_mode="Markdown")
+    return TIMEPW
+
+async def catch_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["time_per_week"] = (update.message.text or "").strip()
+    await update.message.reply_text("⏳ Генерирую идеи... это займёт пару секунд ⌛")
+
+    budget = context.user_data.get("budget", "")
+    skills = context.user_data.get("skills", "")
+    timepw = context.user_data.get("time_per_week", "")
+
+    ideas = generate_ideas(budget, skills, timepw)
+
+    # Сохраняем только то, что нам нужно (без лишних персональных данных)
+    try:
+        SHEET.append_row([
+            datetime.utcnow().isoformat(),
+            str(update.effective_chat.id),
+            budget,
+            skills,
+            timepw,
+            ideas
+        ])
+    except Exception as e:
+        log.error("Ошибка записи в Google Sheet: %s", e)
+
+    text = (
+        "✅ Готово! Вот идеи под твои условия:\n\n"
+        f"{ideas}\n\n"
+        "Если хочешь — напиши */more* и я докину дополнительные шаги запуска.",
+    )
+    await update.message.reply_text(text[0], parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔧 Доп.шаги:\n"
+        "1) Выбери 1 идею и опиши её в 10 строк (что/для кого/ценность).\n"
+        "2) Составь список 10 мест, где есть твоя аудитория (чаты/каналы/форумы).\n"
+        "3) Подготовь 1 бесплатный лид-магнит (чек-лист/шаблон) и предложи его.\n"
+        "4) Сделай 3 итерации по фидбеку.\n\n"
+        "Готов выдать ещё? Напиши */start*.",
+        parse_mode="Markdown",
+    )
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Ок, завершаю. Можешь написать /start, когда будешь готов.")
+    return ConversationHandler.END
+
+def build_app() -> Application:
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_budget)],
+            SKILLS: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_skills)],
+            TIMEPW: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_time)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+    app.add_handler(conv)
+    app.add_handler(CommandHandler("more", more))
+    return app
 
 if __name__ == "__main__":
-    main()
+    app = build_app()
+
+    if not WEBHOOK_BASE_URL:
+        raise RuntimeError("WEBHOOK_BASE_URL не задан — для Render нужен вебхук и открытый порт")
+
+    webhook_url = f"{WEBHOOK_BASE_URL.rstrip('/')}/{WEBHOOK_PATH}"
+    log.info("🌐 Запускаю webhook: %s", webhook_url)
+
+    # run_webhook поднимет HTTP-сервер и привяжется к $PORT — Render это увидит
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=webhook_url,
+        drop_pending_updates=True,  # не тащим старые апдейты
+        stop_signals=None,          # корректное завершение на Render
+    )
