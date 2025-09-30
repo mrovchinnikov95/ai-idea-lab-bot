@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "ai-idea-lab",
+  "private_key_id": "8638cf78072d3beb693bcad6f4ccf21ca0bc1335",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDGHtGqFmzU58+U\naR3WDWB2yZCLHA/N4NWmhKbgqWdDVpP8Gr8TaxfllTh3FeL0bV/RoItCh3dNjLTW\n7YySfKGbj/vvHbmIHHQfJL65tmoxyNbhRP+IZkUEx7jHzjapZTD2gOpnlvbDhJ67\ngZACGjlTZKjY1q9OlcFT1K0nSfUfHFnOCHnCaiABW3sRhrqZu6vq8vO1Ns1a5pT+\nckfMThR6z4rAIalYrWA6gWzG1gklKo5HuwUk/dP66R84GSm4F/eETQj2Lg7fSfFL\nZMNP0+NmVFAZnar+u1Jj8a3lD3QYtP9WtZ1v4K6OEXan2cVgYrMtoSqRNw6/TOr+\nxBzF2f+HAgMBAAECggEAGWwT+FDXVzyFqOQSJYji42s65nbL2l2q3Kqx5Ssnqn7e\nD1/5O8smrlmG/NTsofO082e35uoOF3/iJqAlxRhD/nur1sOILpyEFAj5hkgPeWLt\nm8toRL7mxVXBcrYV0oe/ECp7qZ43/N+0JJhb+8EUsQw+FFD7/sf9nj2wmFWHpB2b\n5Q/YYSuEhbVl4Jm12emRb/QN1POjix079fPQTlOpBxktHEdhJeKMA2NFxipMFueC\n8n+a17Gn3QPX9Nw/Z3Cx50pb8tUtA9oZAfIIHgkXjFlQU1zQX7zvwgWuxjj3uvAv\n3MmP57l4phMt+D7Ozx12SPG5Q08OZ2aAZ4foNVQEcQKBgQDkSmV45S/IFHk3RPlJ\na5/yAT0gV0i+fxEimgMA4M+LPE929n/vrHuMtEcScv7zHi/bSIxJoW9k45CR6y37\ntfXPKx+kJXup81loVkuZ4esl8MKAjrRy6wWJbEVhhWZPs2f5W95wzSrTIgAc30b1\ndDXzVwf1wRIznhtnGD23XWXrdwKBgQDeKvPbxTpKvLZRzWMRkvL4Ip8TtJVSCTbI\nN5nPwFgXtCbJBiZ4BFUz48RLdWZpz+RQVbJKmKcPQV1NPqpsCv0s9fHELvS7QO33\niSpzan5IXefB+bb7oh9Xiu/W7qdNSCfIr6bTtNuAkTooEwpyWNAt08Rhss25pSGC\nQXHuli9wcQKBgH5V3Ynl62diTSKU/Q/wi3c10EoRg6RIVYc8i+T0hGadXayMBYjx\nfv4C1kITeZu5XOqRX3Fv8WF3vg3ChJQDwqB/UOdaBvGqRhRDjVr/d05ryneygZIH\nFe1TCaJKXLBGrIeGm7b5E3X8HuvbdD1prmGYDEOoMRZ3rNqEw8Kx4TFJAoGAeLWt\nuYL3oRPXm6qUYUAOc3OcKwC7AM+wzCgpkg9Xzck8KY0F6b+w63iddsJa2rLxwhRN\nwuoeGtPQ9d9OiVWPKZaXvZglsHge05fbUMpTws4C1gnvudjkXpRGq+kPTZYex5No\neS6S9M/zYUK3Mlm/AqdE1DBqRqvKARO963v+WoECgYEAnaCE88F94GJ+Su9E5zXy\neDlbpUOvluubLPc0hygA7KsFDDzjsdcfyt2XgJhCQkTXS8jf4d4nbs084GTRcMlH\ngy1aIlk9nn4x7KeMlulihvJNZMnvr31/tzDijUepNmhhOD4IO34ysHWxJYDVE60m\nRqXVha9vQUC3dC5oLZ59cYY=\n-----END PRIVATE KEY-----\n",
+  "client_email": "ai-idea-lab-bot@ai-idea-lab.iam.gserviceaccount.com",
+  "client_id": "116414745742502380178",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/ai-idea-lab-bot%40ai-idea-lab.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
