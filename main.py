@@ -2,9 +2,9 @@ import os
 import csv
 import datetime
 import asyncio
-import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
 from typing import Dict
+import gspread
+from google.oauth2.service_account import Credentials
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,19 +15,29 @@ from telegram.ext import (
 )
 from openai import OpenAI
 
-# Состояния опроса
+# ---------- 🧠 Настройки Google Sheets ----------
+SPREADSHEET_NAME = "AI Idea Lab Leads"
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+credentials = Credentials.from_service_account_file(
+    "ai-idea-lab-8638cf78072d.json", scopes=SCOPES
+)
+gc = gspread.authorize(credentials)
+sheet = gc.open(SPREADSHEET_NAME).sheet1
+
+# ---------- 🧠 Состояния опроса ----------
 STATE_BUDGET = "budget"
 STATE_SKILLS = "skills"
 STATE_TIME = "time"
 
-# Приветственное сообщение
+# ---------- 🧠 Приветственное сообщение ----------
 WELCOME = (
     "Привет! Я 🤖 AI Idea Lab. Задам 3 вопроса и подберу идеи микробизнеса под твои условия.\n\n"
     "💰 Сколько денег ты готов вложить на старте? (можно 0, если хочешь без вложений)\n"
     "Примеры: 0, 1000, 5000"
 )
 
-# CSV для лидов
+# ---------- 📁 CSV резервное сохранение ----------
 def ensure_csv():
     if not os.path.exists("leads.csv"):
         with open("leads.csv", "w", newline="", encoding="utf-8") as f:
@@ -35,7 +45,7 @@ def ensure_csv():
             writer.writerow(["timestamp", "user_id", "username", "budget", "skills", "time"])
 
 
-def save_lead(user_id: int, username: str, data: Dict[str, str]):
+def save_lead_local(user_id: int, username: str, data: Dict[str, str]):
     ensure_csv()
     with open("leads.csv", "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -50,11 +60,21 @@ def save_lead(user_id: int, username: str, data: Dict[str, str]):
             ]
         )
 
+# ---------- 📊 Сохранение в Google Sheets ----------
+def save_lead_to_sheet(user_id: int, username: str, data: Dict[str, str]):
+    row = [
+        datetime.datetime.utcnow().isoformat(),
+        str(user_id),
+        username or "",
+        data.get("budget", ""),
+        data.get("skills", ""),
+        data.get("time", ""),
+    ]
+    sheet.append_row(row)
 
-# GPT генерация 3 идей
+# ---------- 🤖 GPT генерация 3 идей ----------
 async def gen_ideas_gpt(budget: int, skills: str, time_week: int) -> str:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
     response = await asyncio.to_thread(
         lambda: client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -80,11 +100,9 @@ async def gen_ideas_gpt(budget: int, skills: str, time_week: int) -> str:
             max_tokens=1000,
         )
     )
-
     return response.choices[0].message.content.strip()
 
-
-# Команды
+# ---------- 🧠 Команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["state"] = STATE_BUDGET
@@ -102,8 +120,7 @@ async def pro_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📩 PRO-отчёт: пришли e-mail одним сообщением, я занесу тебя в список и пришлю, когда будет готово."
     )
 
-
-# Основная логика диалога
+# ---------- 🧠 Основная логика ----------
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     state = context.user_data.get("state")
@@ -135,12 +152,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["time"] = text
         context.user_data["state"] = None
 
-        # Сохраняем лид
-        save_lead(
-            update.effective_user.id,
-            update.effective_user.username,
-            context.user_data,
-        )
+        # ✅ Сохраняем лид локально и в Google Sheets
+        save_lead_local(update.effective_user.id, update.effective_user.username, context.user_data)
+        save_lead_to_sheet(update.effective_user.id, update.effective_user.username, context.user_data)
 
         # Уведомляем о генерации
         await update.message.reply_text(
@@ -182,7 +196,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await update.message.reply_text("Нажми /start, чтобы запустить генератор, или /help")
 
 
-# 🚀 Запуск бота
+# ---------- 🚀 Запуск бота ----------
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -204,13 +218,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 💡 Фейковый веб-сервер для Render
-    def run_server():
-        port = int(os.environ.get("PORT", 8000))
-        server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-        print(f"🌐 Dummy server running on port {port}")
-        server.serve_forever()
-
-    threading.Thread(target=run_server, daemon=True).start()
-
     main()
