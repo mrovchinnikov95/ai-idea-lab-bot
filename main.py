@@ -180,8 +180,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await update.message.reply_text("Нажми /start, чтобы запустить генератор, или /help")
 
 
-# Запуск бота
-async def main():
+# 🚀 Запуск бота (синхронно!)
+def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("❌ TELEGRAM_BOT_TOKEN не найден. Добавь его в Secrets.")
@@ -198,8 +198,8 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 Bot is running...")
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
