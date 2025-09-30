@@ -2,6 +2,8 @@ import os
 import csv
 import datetime
 import asyncio
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 from typing import Dict
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -180,7 +182,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await update.message.reply_text("Нажми /start, чтобы запустить генератор, или /help")
 
 
-# 🚀 Запуск бота (синхронно!)
+# 🚀 Запуск бота
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -202,4 +204,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # 💡 Фейковый веб-сервер для Render
+    def run_server():
+        port = int(os.environ.get("PORT", 8000))
+        server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+        print(f"🌐 Dummy server running on port {port}")
+        server.serve_forever()
+
+    threading.Thread(target=run_server, daemon=True).start()
+
     main()
