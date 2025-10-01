@@ -50,7 +50,7 @@ def connect_sheet():
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     client = gspread.authorize(creds)
-    sh = client.open(SPREADSHEET_NAME)
+    sh = client.open_by_key("1uo3yOGDLrA5d9PCeZSEfVepcIuk3raYlFKTpFeVlWgQ")
     log.info("✅ Подключено к Google Sheet: %s", SPREADSHEET_NAME)
 
     # Гарантируем заголовки
