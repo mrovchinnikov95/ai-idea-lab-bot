@@ -300,6 +300,39 @@ async def erase(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.error("Ошибка при /erase: %s", e)
         await update.message.reply_text("Не удалось удалить данные. Попробуй позже.")
 
+# ---------- Глобальная очистка всех данных (только для администратора) ----------
+
+async def admin_clear_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрашивает подтверждение на удаление всех данных (только админ)."""
+    if str(update.effective_chat.id) != str(ADMIN_CHAT_ID):
+        await update.message.reply_text("🚫 У тебя нет прав для этой команды.")
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "⚠️ ВНИМАНИЕ: это удалит *все данные всех пользователей* без возможности восстановления.\n\n"
+        "Если ты точно уверен — напиши: ПОДТВЕРЖДАЮ"
+    )
+    return 1
+
+async def admin_clear_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполняет удаление всех записей, если админ подтвердил."""
+    if str(update.effective_chat.id) != str(ADMIN_CHAT_ID):
+        await update.message.reply_text("🚫 У тебя нет прав для этой команды.")
+        return ConversationHandler.END
+
+    if update.message.text.strip().upper() == "ПОДТВЕРЖДАЮ":
+        try:
+            SHEET.clear()
+            SHEET.append_row(["timestamp", "chat_id_hash", "budget", "skills", "time_per_week", "ideas_text"])
+            await update.message.reply_text("🧹 Все данные успешно удалены ✅")
+            log.info("🧹 Все данные удалены админом через /admin_clear")
+        except Exception as e:
+            log.error("Ошибка при глобальной очистке: %s", e)
+            await update.message.reply_text("❌ Ошибка при удалении данных.")
+    else:
+        await update.message.reply_text("❌ Очистка отменена.")
+    return ConversationHandler.END
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, завершаю. Можешь написать /start, когда будешь готов.")
     return ConversationHandler.END
@@ -338,6 +371,14 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("erase", erase))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, not_text))
     app.add_error_handler(error_handler)
+
+        # --- Команда полной очистки (только админ) ---
+    admin_clear_conv = ConversationHandler(
+        entry_points=[CommandHandler("admin_clear", admin_clear_start)],
+        states={1: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_clear_confirm)]},
+        fallbacks=[],
+    )
+    app.add_handler(admin_clear_conv)
 
     return app
 
