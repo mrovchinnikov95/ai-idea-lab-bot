@@ -140,7 +140,7 @@ async def catch_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ideas = generate_ideas(budget, skills, timepw)
 
-    # Сохраняем только то, что нам нужно (без лишних персональных данных)
+    # Сохраняем лид в Google Sheet
     try:
         SHEET.append_row([
             datetime.utcnow().isoformat(),
@@ -153,12 +153,29 @@ async def catch_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error("Ошибка записи в Google Sheet: %s", e)
 
+    # ✉️ Уведомляем админа
+    try:
+        admin_chat_id = 6159527584  # твой chat_id
+        await context.bot.send_message(
+            chat_id=admin_chat_id,
+            text=(
+                "📥 Новый лид!\n\n"
+                f"💰 Бюджет: {budget}\n"
+                f"🧠 Навыки: {skills}\n"
+                f"⏱ Время: {timepw}\n\n"
+                f"💡 Сгенерированные идеи:\n{ideas}"
+            )
+        )
+    except Exception as e:
+        log.error("Не удалось отправить сообщение админу: %s", e)
+
+    # Ответ пользователю
     text = (
         "✅ Готово! Вот идеи под твои условия:\n\n"
         f"{ideas}\n\n"
-        "Если хочешь — напиши */more* и я докину дополнительные шаги запуска.",
+        "Если хочешь — напиши */more* и я докину дополнительные шаги запуска."
     )
-    await update.message.reply_text(text[0], parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown")
     return ConversationHandler.END
 
 async def more(update: Update, context: ContextTypes.DEFAULT_TYPE):
