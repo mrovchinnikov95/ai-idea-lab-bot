@@ -8,6 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
@@ -23,13 +24,12 @@ log = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "AI Idea Lab Leads")
-
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")  # если задан, работаем через webhook
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")  # https://<your>.onrender.com (для Render)
 PORT = int(os.getenv("PORT", "8000"))
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", TELEGRAM_TOKEN)  # секретный путь вебхука
-
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))  # 6159527584 (заполни в Render)
-DATA_RETENTION_DAYS = int(os.getenv("DATA_RETENTION_DAYS", "90"))  # срок хранения
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # строкой; можно задать, напр., "6159527584"
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
+HASH_SALT = os.getenv("HASH_SALT", "ai-idea-lab-salt")  # произвольная строка
 
 if not TELEGRAM_TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN не задан")
@@ -37,33 +37,7 @@ if not TELEGRAM_TOKEN:
 if not OPENAI_API_KEY:
     log.warning("⚠️ OPENAI_API_KEY не задан — идеи генерироваться не будут.")
 
-# ---------- Тексты политики и условий (встраиваем прямо в бота) ----------
-PRIVACY_TEXT = (
-    "🔒 *Политика конфиденциальности — AI Idea Lab*\n"
-    "_Дата: 02.10.2025_\n\n"
-    "1) Какие данные: только то, что вы вводите в чат (бюджет/навыки/время), а также тех.метаданные Telegram.\n"
-    "2) Зачем: подбор идей и улучшение подсказок.\n"
-    "3) Хранение: в защищённой Google-таблице, по умолчанию 90 дней. chat_id сохраняем в виде хэша.\n"
-    "4) Передача: Telegram, Google (Sheets), OpenAI — только для работы сервиса. Не продаём данные.\n"
-    "5) Безопасность: минимум данных, хеширование chat_id, логи без ПДн, регулярная очистка.\n"
-    "6) Ваши права: доступ/исправление/удаление/копия — пишите на contact.aiidealab@gmail.com или команда /erase.\n"
-)
-
-TERMS_TEXT = (
-    "📄 *Пользовательское соглашение — AI Idea Lab*\n"
-    "_Дата: 02.10.2025_\n\n"
-    "1) Сервис: бот выдаёт идеи и шаги. Не финсовет/не гарантия дохода.\n"
-    "2) Запрещено: незаконный контент, спам, ПДн третьих лиц без их согласия.\n"
-    "3) Ответственность: материалы «как есть», без гарантий результатов.\n"
-    "4) ИС: тексты бота защищены; всё, что создаёте по идеям — ваше.\n"
-    "5) Конфиденциальность: см. /privacy.\n"
-    "6) Изменения: можем обновлять условия.\n"
-    "7) Контакты: contact.aiidealab@gmail.com\n"
-)
-
 # ---------- Google Sheets ----------
-HEADERS = ["timestamp", "chat_id", "budget", "skills", "time_per_week", "ideas_text"]
-
 def connect_sheet():
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
@@ -79,45 +53,49 @@ def connect_sheet():
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
     client = gspread.authorize(creds)
+    # ВАЖНО: здесь используется open_by_key, а не имя: оставляем как в твоей версии
     sh = client.open_by_key("1uo3yOGDLrA5d9PCeZSEfVepcIuk3raYlFKTpFeVlWgQ")
-    ws = sh.sheet1
-
-    # Гарантируем заголовки ровно как нужно
-    headers = ws.row_values(1)
-    if headers != HEADERS:
-        ws.clear()
-        ws.append_row(HEADERS)
-
     log.info("✅ Подключено к Google Sheet: %s", SPREADSHEET_NAME)
+
+    ws = sh.sheet1
+    headers = ws.row_values(1)
+    wanted = ["timestamp", "chat_id_hash", "budget", "skills", "time_per_week", "ideas_text"]
+    if headers != wanted:
+        ws.clear()
+        ws.append_row(wanted)
     return ws
 
-def cleanup_old_rows(ws, days: int):
-    """Удаляет записи старше N дней, оставляя заголовки."""
-    if days <= 0:
-        return
-    try:
-        records = ws.get_all_records()  # список словарей, начиная со 2-й строки
-        cutoff = datetime.utcnow() - timedelta(days=days)
-        to_keep = []
-        for r in records:
-            try:
-                ts = datetime.fromisoformat(r["timestamp"])
-                if ts >= cutoff:
-                    to_keep.append([r[h] for h in HEADERS])
-            except Exception:
-                # если timestamp кривой — не удаляем на всякий
-                to_keep.append([r[h] for h in HEADERS])
-
-        ws.clear()
-        ws.append_row(HEADERS)
-        if to_keep:
-            ws.append_rows(to_keep)
-        log.info("🧹 Очистка завершена: осталось %d записей", len(to_keep))
-    except Exception as e:
-        log.error("Ошибка очистки: %s", e)
-
 SHEET = connect_sheet()
-cleanup_old_rows(SHEET, DATA_RETENTION_DAYS)
+
+def prune_old_rows(ws, retention_days: int = 30):
+    """Мягкая чистка: удаляем строки старше retention_days (если колонка timestamp валидна)."""
+    try:
+        data = ws.get_all_values()
+        if len(data) <= 1:
+            return
+        # собираем индексы (1-based) строк на удаление
+        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        to_delete = []
+        for idx, row in enumerate(data[1:], start=2):
+            ts = row[0].strip() if len(row) > 0 else ""
+            try:
+                dt = datetime.fromisoformat(ts)
+                if dt < cutoff:
+                    to_delete.append(idx)
+            except Exception:
+                # если timestamp битый, на всякий не трогаем
+                continue
+        # Удаляем снизу вверх, чтобы индексы не съезжали
+        deleted = 0
+        for r in reversed(to_delete):
+            ws.delete_rows(r)
+            deleted += 1
+        log.info("🧹 Очистка завершена: удалено %d строк, осталось %d записей", deleted, len(ws.get_all_values()) - 1)
+    except Exception as e:
+        log.warning("Не удалось выполнить очистку: %s", e)
+
+# делаем чистку при старте (не критично, если не получится)
+prune_old_rows(SHEET, RETENTION_DAYS)
 
 # ---------- OpenAI ----------
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -139,12 +117,12 @@ def generate_ideas(budget: str, skills: str, time_per_week: str) -> str:
 - Навыки/интересы: {skills}
 - Время в неделю: {time_per_week}
 
-Формат:
+Формат ответа:
 — Короткое название
-— 1–2 предложения ценности
+— Что это даёт пользователю (1–2 предложения)
 — 3 шага старта
-— 1–2 варианта монетизации
-Лаконично.
+— Как монетизировать (1–2 варианта)
+Сделай лаконично и по делу.
 """
     try:
         resp = client.chat.completions.create(
@@ -161,66 +139,90 @@ def generate_ideas(budget: str, skills: str, time_per_week: str) -> str:
         log.error("OpenAI error: %s", e)
         return fallback
 
-# ---------- Хелперы ----------
-def hash_chat_id(cid: int) -> str:
-    return hashlib.sha256(str(cid).encode("utf-8")).hexdigest()[:16]
+# ---------- Утилиты ----------
+def hash_chat_id(chat_id: int) -> str:
+    s = f"{HASH_SALT}:{chat_id}".encode("utf-8")
+    return hashlib.sha256(s).hexdigest()
+
+# ---------- Тексты /privacy и /terms ----------
+PRIVACY_TEXT = (
+    "*Политика конфиденциальности*\n\n"
+    "AI Idea Lab обрабатывает только данные, которые ты сам вводишь в чат-боте "
+    "(бюджет, навыки, время и ответы на вопросы).\n\n"
+    "Мы *не собираем и не храним*: имена, телефоны, email, адреса; финансовую/медицинскую информацию; "
+    "иную персональную информацию, по которой тебя можно идентифицировать.\n\n"
+    "Данные используются *исключительно* для подбора идей микробизнеса и их генерации с помощью ИИ. "
+    "Мы не передаём данные третьим лицам и не используем их для рекламы.\n\n"
+    "Данные автоматически удаляются через 30 дней или по твоему запросу командой /erase.\n"
+)
+
+TERMS_TEXT = (
+    "*Условия использования*\n\n"
+    "1) Используя бот AI Idea Lab, ты подтверждаешь, что ознакомился с /privacy и согласен с ним.\n"
+    "2) Ответы бота носят информационный характер и не являются юридической/финансовой консультацией.\n"
+    "3) Ответственность за применение идей лежит на пользователе.\n"
+    "4) Функционал и условия могут обновляться — актуальная версия публикуется здесь.\n"
+    "5) Если не согласен — не используй бот.\n"
+)
 
 # ---------- Состояния диалога ----------
 CONSENT, BUDGET, SKILLS, TIMEPW = range(4)
 
-CONSENT_TEXT = (
+START_TEXT = (
     "Привет! Я 🤖 *AI Idea Lab*.\n\n"
     "Перед стартом: я обработаю твои ответы (бюджет/навыки/время) только для подбора идей. "
     "Подробности: /privacy и /terms.\n\n"
     "Если согласен — напиши *СОГЛАСЕН* (именно это слово)."
 )
 
-START_TEXT = (
-    "Ок! Начинаем.\n\n"
-    "💰 Сколько денег готов вложить на старте?\n"
-    "_Примеры: 0, 1000, 5000_"
-)
-
-# ---------- Handlers ----------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text(CONSENT_TEXT, parse_mode="Markdown")
+# ---------- Хендлеры ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(START_TEXT, parse_mode=ParseMode.MARKDOWN)
     return CONSENT
 
-async def catch_consent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def consent_catch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip().upper()
     if text != "СОГЛАСЕН":
-        await update.message.reply_text("Ок! Если передумаешь — напиши /start.")
-        return ConversationHandler.END
-    await update.message.reply_text(START_TEXT, parse_mode="Markdown")
+        await update.message.reply_text(
+            "Чтобы продолжить, напиши *СОГЛАСЕН*. "
+            "Посмотреть правила: /privacy и /terms",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return CONSENT
+
+    await update.message.reply_text(
+        "Ок! Начинаем.\n\n"
+        "💰 Сколько денег готов вложить на старте?\n_Примеры: 0, 1000, 5000_",
+        parse_mode=ParseMode.MARKDOWN
+    )
     return BUDGET
 
 async def catch_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["budget"] = (update.message.text or "").strip()
-    await update.message.reply_text("🧠 Какие у тебя навыки или интересы? _Напиши через запятую_", parse_mode="Markdown")
+    await update.message.reply_text("🧠 Какие у тебя навыки или интересы? _Напиши через запятую_", parse_mode=ParseMode.MARKDOWN)
     return SKILLS
 
 async def catch_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["skills"] = (update.message.text or "").strip()
-    await update.message.reply_text("⏱ Сколько времени готов уделять в неделю?\n_Пример: >10 часов/нед_", parse_mode="Markdown")
+    await update.message.reply_text("⏱ Сколько времени готов уделять в неделю?\n_Пример: >10 часов/нед_", parse_mode=ParseMode.MARKDOWN)
     return TIMEPW
 
 async def catch_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    budget = (context.user_data.get("budget") or "").strip()
-    skills = (context.user_data.get("skills") or "").strip()
-    timepw = (update.message.text or "").strip()
-    context.user_data["time_per_week"] = timepw
-
+    context.user_data["time_per_week"] = (update.message.text or "").strip()
     await update.message.reply_text("⏳ Генерирую идеи... это займёт пару секунд ⌛")
+
+    budget = context.user_data.get("budget", "")
+    skills = context.user_data.get("skills", "")
+    timepw = context.user_data.get("time_per_week", "")
 
     ideas = generate_ideas(budget, skills, timepw)
 
-    # Сохраняем только минимум, chat_id обезличиваем
-    cid_hashed = hash_chat_id(update.effective_chat.id)
+    # Сохраняем минимум и только хэш чата
     try:
+        chat_id_hash = hash_chat_id(update.effective_chat.id)
         SHEET.append_row([
             datetime.utcnow().isoformat(),
-            cid_hashed,   # вместо реального chat_id
+            chat_id_hash,
             budget,
             skills,
             timepw,
@@ -229,30 +231,33 @@ async def catch_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error("Ошибка записи в Google Sheet: %s", e)
 
-    # Админу — только обезличенное уведомление
-    if ADMIN_CHAT_ID:
-        try:
+    # Уведомление админу (если задан)
+    try:
+        if ADMIN_CHAT_ID:
             await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
+                chat_id=int(ADMIN_CHAT_ID),
                 text=(
-                    "📥 Новый лид (обезличено)\n"
-                    f"• chat: {cid_hashed}\n"
-                    "• статус: идеи сгенерированы и отправлены пользователю."
-                )
+                    "📥 *Новый лид!*\n\n"
+                    f"💰 Бюджет: {budget}\n"
+                    f"🧠 Навыки: {skills}\n"
+                    f"⏱ Время: {timepw}\n\n"
+                    f"💡 Идеи:\n{ideas}"
+                ),
+                parse_mode=ParseMode.MARKDOWN
             )
-        except Exception as e:
-            log.error("Не удалось оповестить админа: %s", e)
+    except Exception as e:
+        log.warning("Не удалось отправить уведомление админу: %s", e)
 
-    # Ответ пользователю
-    text = (
+    await update.message.reply_text(
         "✅ Готово! Вот идеи под твои условия:\n\n"
         f"{ideas}\n\n"
-        "Если хочешь — напиши */more* и я докину дополнительные шаги запуска."
+        "Если хочешь — напиши */more* и я докину дополнительные шаги запуска.\n\n"
+        "Команды: /privacy /terms /erase",
+        parse_mode=ParseMode.MARKDOWN
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
     return ConversationHandler.END
 
-async def cmd_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔧 Доп.шаги:\n"
         "1) Выбери 1 идею и опиши её в 10 строк (что/для кого/ценность).\n"
@@ -260,93 +265,100 @@ async def cmd_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3) Подготовь 1 бесплатный лид-магнит (чек-лист/шаблон) и предложи его.\n"
         "4) Сделай 3 итерации по фидбеку.\n\n"
         "Готов выдать ещё? Напиши */start*.",
-        parse_mode="Markdown",
+        parse_mode=ParseMode.MARKDOWN,
     )
 
-async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(PRIVACY_TEXT, parse_mode="Markdown")
+async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(PRIVACY_TEXT, parse_mode=ParseMode.MARKDOWN)
 
-async def cmd_terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(TERMS_TEXT, parse_mode="Markdown")
+async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(TERMS_TEXT, parse_mode=ParseMode.MARKDOWN)
 
-async def cmd_erase(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаление всех записей пользователя (по хэшу chat_id)."""
-    cid_hashed = hash_chat_id(update.effective_chat.id)
+async def erase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет все строки, относящиеся к этому пользователю (по chat_id_hash)."""
     try:
-        all_values = SHEET.get_all_values()  # список списков
-        if not all_values or len(all_values) < 2:
-            await update.message.reply_text("У тебя нет сохранённых данных.")
+        chat_id_hash = hash_chat_id(update.effective_chat.id)
+        data = SHEET.get_all_values()
+        if len(data) <= 1:
+            await update.message.reply_text("Нечего удалять — данных нет.")
             return
 
-        # Найти индекс столбца chat_id по заголовку
-        headers = all_values[0]
-        chat_idx = headers.index("chat_id")
-
-        # Удаляем строки снизу вверх, где chat_id == cid_hashed
+        # ищем все строки с этим хэшем
         to_delete = []
-        for i in range(len(all_values) - 1, 0, -1):
-            row = all_values[i]
-            if len(row) > chat_idx and row[chat_idx] == cid_hashed:
-                to_delete.append(i + 1)  # индексация листа с 1
+        for idx, row in enumerate(data[1:], start=2):
+            if len(row) > 1 and row[1] == chat_id_hash:
+                to_delete.append(idx)
 
-        for row_index in to_delete:
-            SHEET.delete_rows(row_index)
+        if not to_delete:
+            await update.message.reply_text("Данных по тебе не найдено. Уже чисто ✨")
+            return
 
-        if to_delete:
-            await update.message.reply_text("Готово! Твои данные удалены.")
-        else:
-            await update.message.reply_text("У тебя нет сохранённых данных.")
+        for r in reversed(to_delete):
+            SHEET.delete_rows(r)
+        await update.message.reply_text(f"Готово. Удалено записей: {len(to_delete)} ✅")
     except Exception as e:
-        log.error("Ошибка удаления: %s", e)
+        log.error("Ошибка при /erase: %s", e)
         await update.message.reply_text("Не удалось удалить данные. Попробуй позже.")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, завершаю. Можешь написать /start, когда будешь готов.")
     return ConversationHandler.END
 
-# Фолбэки на не-текст в диалоге
-async def non_text_in_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Пожалуйста, отвечай текстом 🙏")
+async def not_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Пожалуйста, ответь текстом. Если хочешь начать заново — /start")
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    log.exception("Ошибка в обработке апдейта: %s", context.error)
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text("Ой! Что-то пошло не так. Попробуй ещё раз 🙏")
+    except Exception:
+        pass
+
+# ---------- Application ----------
 def build_app() -> Application:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start)],
+        entry_points=[CommandHandler("start", start)],
         states={
-            CONSENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_consent),
-                      MessageHandler(~filters.TEXT, non_text_in_flow)],
-            BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_budget),
-                     MessageHandler(~filters.TEXT, non_text_in_flow)],
-            SKILLS: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_skills),
-                     MessageHandler(~filters.TEXT, non_text_in_flow)],
-            TIMEPW: [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_time),
-                     MessageHandler(~filters.TEXT, non_text_in_flow)],
+            CONSENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, consent_catch)],
+            BUDGET:  [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_budget)],
+            SKILLS:  [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_skills)],
+            TIMEPW:  [MessageHandler(filters.TEXT & ~filters.COMMAND, catch_time)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
+
     app.add_handler(conv)
-    app.add_handler(CommandHandler("more", cmd_more))
-    app.add_handler(CommandHandler("privacy", cmd_privacy))
-    app.add_handler(CommandHandler("terms", cmd_terms))
-    app.add_handler(CommandHandler("erase", cmd_erase))
+    app.add_handler(CommandHandler("more", more))
+    app.add_handler(CommandHandler("privacy", privacy))
+    app.add_handler(CommandHandler("terms", terms))
+    app.add_handler(CommandHandler("erase", erase))
+    app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, not_text))
+    app.add_error_handler(error_handler)
+
     return app
 
+# ---------- Запуск ----------
 if __name__ == "__main__":
     app = build_app()
 
-    # Автовыбор режима: если есть BASE_URL — вебхук (Render), иначе polling (локально)
     if WEBHOOK_BASE_URL:
         webhook_url = f"{WEBHOOK_BASE_URL.rstrip('/')}/{WEBHOOK_PATH}"
         log.info("🌐 Запускаю webhook: %s", webhook_url)
+
+        # режим webhook (для Render / прод)
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path=WEBHOOK_PATH,
             webhook_url=webhook_url,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            stop_signals=None,
         )
     else:
+        # локальный режим polling (удобно для тестов)
         log.info("🤖 Бот запущен в режиме polling")
-        app.run_polling()
+        app.run_polling(drop_pending_updates=True)
