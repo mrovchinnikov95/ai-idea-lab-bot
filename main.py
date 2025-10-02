@@ -195,19 +195,13 @@ def build_app() -> Application:
 
 if __name__ == "__main__":
     app = build_app()
-
-    if not WEBHOOK_BASE_URL:
-        raise RuntimeError("WEBHOOK_BASE_URL не задан — для Render нужен вебхук и открытый порт")
-
     webhook_url = f"{WEBHOOK_BASE_URL.rstrip('/')}/{WEBHOOK_PATH}"
     log.info("🌐 Запускаю webhook: %s", webhook_url)
 
-    # run_webhook поднимет HTTP-сервер и привяжется к $PORT — Render это увидит
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_PATH,
         webhook_url=webhook_url,
-        drop_pending_updates=True,  # не тащим старые апдейты
-        stop_signals=None,          # корректное завершение на Render
+        drop_pending_updates=True
     )
